@@ -91,3 +91,4 @@ docker exec -it spark-iceberg spark-submit spark_join_optimization_analysis.py
 
 Or paste the code into a Jupyter notebook cell-by-cell against the same
 Spark session.
+# spark-join-optimization-analysis-using-iceberg

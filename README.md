@@ -111,7 +111,9 @@ explain("formatted")
 
 where no `Exchange` node appears before either side of the join.
 
-> **Screenshot suggestion:** Add the physical execution plan here highlighting the absence of an `Exchange` operator.
+<p align="left">
+  <img src="docs/Storage-Partitioned_Join.png" width="650">
+</p>
 
 ---
 
@@ -125,6 +127,10 @@ The lookup tables
 are explicitly broadcast because they are significantly smaller than the fact tables.
 
 This avoids unnecessary network shuffles while keeping the join efficient.
+
+<p align="left">
+  <img src="docs/Broadcast_Join.png" width="650">
+</p>
 
 ---
 
@@ -180,7 +186,9 @@ Each output directory is measured to determine its total size on disk.
 
 In general, partitioning by low-cardinality columns groups similar records into fewer files, which often improves compression and storage efficiency.
 
-> **Screenshot suggestion:** Add a table or chart showing the output size of each layout.
+<p align="left">
+  <img src="docs/Partition_Comparison.png" width="650">
+</p>
 
 ---
 

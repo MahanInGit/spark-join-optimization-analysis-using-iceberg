@@ -1,94 +1,260 @@
-# Spark Fundamentals Homework — Bucket Joins, Broadcast Joins & Partition Tuning
+# Spark Join Optimization with Apache Iceberg
 
-PySpark job analyzing Halo match data (`matches`, `match_details`,
-`medals_matches_players`, `medals`, `maps`) using Apache Iceberg tables.
+A PySpark project exploring how **Storage-Partitioned Joins**, **Broadcast Joins**, and different **partitioning strategies** affect query execution and storage efficiency when processing large-scale Halo 5 match data using Apache Spark and Apache Iceberg.
 
-## What it does
+---
 
-1. Disables automatic broadcast joins (`spark.sql.autoBroadcastJoinThreshold = -1`)
-2. Bucket-joins `matches`, `match_details`, and `medals_matches_players` on
-   `match_id` (16 buckets), using Iceberg's `bucket()` partition transform +
-   Storage-Partitioned Joins (Spark 3.3+)
-3. Explicitly broadcast-joins the small lookup tables `medals` and `maps`
-4. Answers four questions from the joined dataset:
-   - Which player averages the most kills per game?
-   - Which playlist gets played the most?
-   - Which map gets played the most?
-   - Which map do players get the most Killing Spree medals on?
-5. Compares four different partition/sort layouts to see which produces the
-   smallest output size on disk
+## Project Overview
 
-## Data
+Joins are among the most expensive operations in distributed data processing because they often require shuffling data across executors. This project investigates several Spark optimization techniques that reduce unnecessary shuffles and improve query performance while also examining how different partition layouts influence storage efficiency.
 
-This project uses Halo 5 match data (`matches.csv`, `match_details.csv`,
-`medals_matches_players.csv`, `medals.csv`, `maps.csv`) from the
-DataExpert.io Spark Fundamentals bootcamp.
+The project demonstrates:
 
-**Data files are not included in this repo** (see `.gitignore`), since they
-aren't mine to redistribute and aren't needed to understand or review the
-code itself. To reproduce the results, obtain the same five CSVs from the
-DataExpert.io course materials and place them at `/home/iceberg/data/`
-inside the Spark/Iceberg Docker container (see "Running it" below) — no
-code changes are needed, since that path is defined by the course's Docker
-setup rather than any machine-specific location.
+- Storage-Partitioned Joins using Iceberg bucket transforms
+- Explicit Broadcast Joins for small lookup tables
+- Shuffle elimination using bucketed tables
+- Different partitioning and sorting strategies
+- Analytical queries over a fully joined dataset
 
-## Key finding: shuffle-free joins with Iceberg + Storage-Partitioned Joins
+---
 
-Bucketing `match_details` and `matches` the same way (16 buckets on
-`match_id`) and enabling:
+## Technologies
+
+- Apache Spark 3.3+
+- PySpark
+- Apache Iceberg
+- Iceberg REST Catalog
+- Spark SQL
+- Docker
+
+---
+
+## Dataset
+
+This project uses the Halo 5 match dataset provided in the **DataExpert.io Spark Fundamentals Bootcamp**.
+
+Files used:
+
+- `matches.csv`
+- `match_details.csv`
+- `medals_matches_players.csv`
+- `medals.csv`
+- `maps.csv`
+
+The datasets are **not included** in this repository because they belong to the course material.
+
+To reproduce the project, obtain the five CSV files from the course materials and place them in:
+
+```text
+/home/iceberg/data/
+```
+
+inside the Spark/Iceberg Docker container.
+
+---
+
+# Project Workflow
+
+<p align="left">
+  <img src="docs/project_workflow.png" width="150">
+</p>
+
+---
+
+# Project Objectives
+
+This project answers the following analytical questions:
+
+- Which player averages the most kills per game?
+- Which playlist is played the most?
+- Which map is played the most?
+- Which map do players earn the most Killing Spree medals on?
+
+Additionally, it compares four different physical storage layouts to determine which produces the smallest output size.
+
+---
+
+# Optimization Techniques
+
+## 1. Disabling Automatic Broadcast Joins
+
+Automatic broadcasting is disabled so that broadcast joins are controlled explicitly.
+
+```python
+spark.conf.set("spark.sql.autoBroadcastJoinThreshold", "-1")
+```
+
+---
+
+## 2. Storage-Partitioned Joins
+
+The three largest datasets are written as Iceberg tables bucketed by:
+
+```text
+bucket(16, match_id)
+```
+
+After enabling
 
 ```python
 spark.conf.set("spark.sql.sources.v2.bucketing.enabled", "true")
 spark.conf.set("spark.sql.iceberg.planning.preserve-data-grouping", "true")
 ```
 
-lets Spark join them **without a shuffle** — confirmed via `explain()`, which
-shows no `Exchange` node before either side of the join.
+Spark performs the join between `matches` and `match_details` **without a shuffle**.
 
-Joining in `medals_matches_players` on `match_id` **and** `player_gamertag`,
-however, *does* still shuffle — even though all three tables are bucketed the
-same way. This is expected: bucketing only guarantees colocation for exactly
-the column(s) declared at bucket-creation time. A composite join key
-(`match_id` + `player_gamertag`) isn't satisfied by a single-column bucket
-spec (`match_id` only), regardless of how the query is written.
+This was verified using
 
-## Key finding: partition layout vs. output size
+```python
+explain("formatted")
+```
 
-Four layouts were compared by writing `final_df` out each way and measuring
-total output size:
+where no `Exchange` node appears before either side of the join.
+
+> **Screenshot suggestion:** Add the physical execution plan here highlighting the absence of an `Exchange` operator.
+
+---
+
+## 3. Broadcast Joins
+
+The lookup tables
+
+- `medals`
+- `maps`
+
+are explicitly broadcast because they are significantly smaller than the fact tables.
+
+This avoids unnecessary network shuffles while keeping the join efficient.
+
+---
+
+## 4. Why the Second Join Still Shuffles
+
+Although all three large tables are bucketed using
+
+```text
+match_id
+```
+
+the join with `medals_matches_players` requires
+
+```text
+(match_id, player_gamertag)
+```
+
+Bucketing only guarantees co-location for the bucketed column(s). Since the join key is composite, Spark must still repartition the data before performing the join.
+
+This behavior is expected and illustrates one limitation of bucket-based optimization.
+
+---
+
+# Working with `final_df`
+
+The fully joined dataset (`final_df`) contains **one row per medal**, not one row per player per match.
+
+As a result, player statistics are duplicated once for every medal earned.
+
+To avoid fan-out bias:
+
+- **Q1** removes duplicate player-match records before calculating average kills.
+- **Q2** counts distinct matches rather than rows.
+- **Q3** also counts distinct matches.
+- **Q4** intentionally operates at medal granularity because medal counts are the desired metric.
+
+This ensures each aggregation is performed at the correct level of detail.
+
+---
+
+# Partition Layout Comparison
+
+To evaluate how physical data layout influences storage efficiency, `final_df` is written using four different strategies.
 
 | Layout | Strategy |
-|---|---|
-| version_a | `partitionBy("playlist_id")`, sorted within by `mapid` |
-| version_b | `partitionBy("mapid")`, sorted within by `playlist_id` |
-| version_c | `partitionBy("playlist_id", "mapid")`, sorted within by `match_id` |
-| version_d | no partitioning, just `sortWithinPartitions("mapid")` (baseline) |
+|---------|----------|
+| Version A | Partition by `playlist_id`, sort by `mapid` |
+| Version B | Partition by `mapid`, sort by `playlist_id` |
+| Version C | Partition by `playlist_id` and `mapid`, sort by `match_id` |
+| Version D | No partitioning, sort only (baseline) |
 
-Results are printed at the end of the script run. In general, partitioning by
-a low-cardinality column groups similar rows into the same files, which tends
-to improve compression — but the exact winner depends on how evenly that
-column splits the data.
+Each output directory is measured to determine its total size on disk.
 
-## Data assumption on `final_df`
+In general, partitioning by low-cardinality columns groups similar records into fewer files, which often improves compression and storage efficiency.
 
-`final_df` has one row **per medal** (since it includes
-`medals_matches_players`), not one row per player-per-match. Aggregations
-that need a per-match or per-player granularity (average kills, match counts)
-de-duplicate first to avoid over-weighting players/matches with many medals.
-See comments in `q1_avg_kills_per_player`, `q2_most_played_playlist`, and
-`q3_most_played_map` in the script.
+> **Screenshot suggestion:** Add a table or chart showing the output size of each layout.
 
-## Running it
+---
 
-Requires a Spark environment with an Iceberg REST catalog configured (this
-was developed against the `spark-iceberg` Docker container from the
-DataExpert.io Spark Fundamentals course setup) and the five CSVs available at
-`/home/iceberg/data/` (see "Data" above).
+# Key Findings
+
+### Storage-Partitioned Join
+
+✅ Joining `matches` and `match_details` on the bucketed column eliminates the shuffle.
+
+### Broadcast Join
+
+✅ Explicitly broadcasting small lookup tables avoids unnecessary repartitioning.
+
+### Partitioning Strategy
+
+✅ Different physical layouts produce different output sizes, demonstrating how partition design influences storage efficiency.
+
+---
+
+# Repository Structure
+
+```text
+.
+├── spark_join_optimization_analysis.py
+├── README.md
+├── images
+│   ├── execution_plan.png
+│   ├── spark_ui.png
+│   └── partition_comparison.png
+```
+
+---
+
+# Running the Project
+
+This project requires:
+
+- Apache Spark
+- Apache Iceberg REST Catalog
+- Docker
+- The five Halo CSV files
+
+Run using:
 
 ```bash
 docker exec -it spark-iceberg spark-submit spark_join_optimization_analysis.py
 ```
 
-Or paste the code into a Jupyter notebook cell-by-cell against the same
-Spark session.
-# spark-join-optimization-analysis-using-iceberg
+Alternatively, execute the script in a Jupyter notebook connected to the same Spark session.
+
+---
+
+# Future Improvements
+
+Potential extensions include:
+
+- Compare execution time before and after optimization
+- Benchmark different bucket counts (8, 16, 32)
+- Compare shuffle read/write metrics
+- Add Spark UI screenshots
+- Analyze file-size distribution across partitions
+- Compare additional partitioning strategies
+
+---
+
+# What I Learned
+
+This project gave me hands-on experience with:
+
+- Storage-Partitioned Joins
+- Apache Iceberg bucket transforms
+- Broadcast Join optimization
+- Spark execution plans
+- Shuffle elimination
+- Physical data layout design
+- Partitioning strategies
+- Query optimization in distributed systems

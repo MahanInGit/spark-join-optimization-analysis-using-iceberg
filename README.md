@@ -56,7 +56,7 @@ inside the Spark/Iceberg Docker container.
 # Project Workflow
 
 <p align="left">
-  <img src="docs/project_workflow.png" width="150">
+  <img src="docs/project_workflow.png" width="500">
 </p>
 
 ---
